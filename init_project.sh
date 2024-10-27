@@ -11,7 +11,8 @@ cd "$PROJECT_NAME" || exit
 go mod init "example.com/$PROJECT_NAME"
 
 # Add dependencies
-go get -u github.com/go-sql-driver/mysql
+go get -u gorm.io/gorm
+go get -u gorm.io/driver/mysql
 go get -u github.com/spf13/viper
 go get -u github.com/gorilla/mux
 
@@ -26,7 +27,7 @@ EOL
 # Create README.md
 cat <<EOL > README.md
 # $PROJECT_NAME
-This is a sample Golang project following a repository pattern with MySQL.
+This is a sample Golang project following a repository pattern with MySQL, utilizing GORM as the ORM.
 
 ## Getting Started
 1. Set up your environment variables in the .env file.
@@ -64,8 +65,12 @@ EOL
 cat <<'EOL' > internal/domain/book.go
 package domain
 
+import (
+    "gorm.io/gorm"
+)
+
 type Book struct {
-    ID     string
+    ID     string `gorm:"primaryKey"`
     Title  string
     Author string
     Year   string
@@ -87,72 +92,49 @@ type BookRepository interface {
 }
 EOL
 
-# internal/repository/book_repo_mysql.go
-cat <<'EOL' > internal/repository/book_repo_mysql.go
+# internal/repository/book_repo_gorm.go
+cat <<'EOL' > internal/repository/book_repo_gorm.go
 package repository
 
 import (
-    "context"
-    "database/sql"
     "example.com/$PROJECT_NAME/internal/domain"
+    "gorm.io/gorm"
 )
 
-type MySQLBookRepository struct {
-    DB *sql.DB
+type GORMBookRepository struct {
+    DB *gorm.DB
 }
 
-func NewMySQLBookRepository(db *sql.DB) *MySQLBookRepository {
-    return &MySQLBookRepository{DB: db}
+func NewGORMBookRepository(db *gorm.DB) *GORMBookRepository {
+    return &GORMBookRepository{DB: db}
 }
 
-func (r *MySQLBookRepository) Create(book *domain.Book) error {
-    query := "INSERT INTO books (id, title, author, year) VALUES (?, ?, ?, ?)"
-    _, err := r.DB.ExecContext(context.Background(), query, book.ID, book.Title, book.Author, book.Year)
-    return err
+func (r *GORMBookRepository) Create(book *domain.Book) error {
+    return r.DB.Create(book).Error
 }
 
-func (r *MySQLBookRepository) GetByID(id string) (*domain.Book, error) {
-    query := "SELECT id, title, author, year FROM books WHERE id = ?"
-    row := r.DB.QueryRowContext(context.Background(), query, id)
-
+func (r *GORMBookRepository) GetByID(id string) (*domain.Book, error) {
     var book domain.Book
-    if err := row.Scan(&book.ID, &book.Title, &book.Author, &book.Year); err != nil {
+    if err := r.DB.First(&book, "id = ?", id).Error; err != nil {
         return nil, err
     }
-
     return &book, nil
 }
 
-func (r *MySQLBookRepository) GetAll() ([]domain.Book, error) {
-    query := "SELECT id, title, author, year FROM books"
-    rows, err := r.DB.QueryContext(context.Background(), query)
-    if err != nil {
+func (r *GORMBookRepository) GetAll() ([]domain.Book, error) {
+    var books []domain.Book
+    if err := r.DB.Find(&books).Error; err != nil {
         return nil, err
     }
-    defer rows.Close()
-
-    var books []domain.Book
-    for rows.Next() {
-        var book domain.Book
-        if err := rows.Scan(&book.ID, &book.Title, &book.Author, &book.Year); err != nil {
-            return nil, err
-        }
-        books = append(books, book)
-    }
-
     return books, nil
 }
 
-func (r *MySQLBookRepository) Update(book *domain.Book) error {
-    query := "UPDATE books SET title=?, author=?, year=? WHERE id=?"
-    _, err := r.DB.ExecContext(context.Background(), query, book.Title, book.Author, book.Year, book.ID)
-    return err
+func (r *GORMBookRepository) Update(book *domain.Book) error {
+    return r.DB.Save(book).Error
 }
 
-func (r *MySQLBookRepository) Delete(id string) error {
-    query := "DELETE FROM books WHERE id = ?"
-    _, err := r.DB.ExecContext(context.Background(), query, id)
-    return err
+func (r *GORMBookRepository) Delete(id string) error {
+    return r.DB.Delete(&domain.Book{}, "id = ?", id).Error
 }
 EOL
 
@@ -236,26 +218,30 @@ cat <<'EOL' > cmd/$PROJECT_NAME/main.go
 package main
 
 import (
-    "database/sql"
     "log"
     "net/http"
     "example.com/$PROJECT_NAME/api/handlers"
     "example.com/$PROJECT_NAME/config"
     "example.com/$PROJECT_NAME/internal/app"
+    "example.com/$PROJECT_NAME/internal/domain"
     "example.com/$PROJECT_NAME/internal/repository"
     "github.com/gorilla/mux"
-    _ "github.com/go-sql-driver/mysql"
+    "gorm.io/driver/mysql"
+    "gorm.io/gorm"
 )
 
 func main() {
     cfg := config.LoadConfig()
-    db, err := sql.Open("mysql", cfg.DatabaseURL)
+
+    db, err := gorm.Open(mysql.Open(cfg.DatabaseURL), &gorm.Config{})
     if err != nil {
         log.Fatalf("Could not connect to database: %v", err)
     }
-    defer db.Close()
 
-    repo := repository.NewMySQLBookRepository(db)
+    // Auto migrate to create or update tables based on the domain model
+    db.AutoMigrate(&domain.Book{})
+
+    repo := repository.NewGORMBookRepository(db)
     service := app.NewBookService(repo)
     handler := handlers.BookHandler{Service: service}
 
@@ -268,4 +254,4 @@ func main() {
 }
 EOL
 
-echo "Project $PROJECT_NAME initialized successfully with MySQL support!"
+echo "Project $PROJECT_NAME initialized successfully with GORM support and best practices!"
